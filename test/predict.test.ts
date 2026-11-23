@@ -425,3 +425,54 @@ describe("real-world: AC script from several Weekdays All triggers", () => {
     expect(groups.find((g) => g.first.trigger.id === "9:00 AM")?.otherBranch).toBe(true);
   });
 });
+
+describe("real-world: AC Script chooses by outside temperature", () => {
+  const acScript = {
+    sequence: [
+      {
+        choose: [
+          {
+            conditions: [{ condition: "or", conditions: [{ condition: "numeric_state", entity_id: "sensor.outside_temp", above: 48, below: 60 }] }],
+            sequence: [
+              { action: "climate.set_hvac_mode", target: { entity_id: ["climate.thermostat"] }, data: { hvac_mode: "cool" } },
+              { action: "climate.set_temperature", data: { temperature: 73 }, target: { entity_id: "climate.thermostat" } },
+            ],
+          },
+          {
+            conditions: [{ condition: "or", conditions: [{ condition: "numeric_state", entity_id: "sensor.outside_temp", below: 39 }] }],
+            sequence: [{ action: "climate.set_hvac_mode", target: { entity_id: ["climate.thermostat"] }, data: { hvac_mode: "off" } }],
+          },
+        ],
+      },
+    ],
+  };
+
+  function setup(warm: boolean) {
+    const hass = makeHass();
+    const tctx: TargetContext = { entityId: "climate.thermostat", labels: [], scripts: new Map([["script.ac_script", acScript]]) };
+    const a = parseAutomation(hass, "automation.w", { triggers: [{ trigger: "time", at: "08:00" }], actions: [{ action: "script.ac_script" }] }, tctx);
+    // Live (current) results of the two temperature checks.
+    const leaves = a.actions.flatMap((x) => x.guards);
+    const warmCond = acScript.sequence[0].choose[0].conditions[0].conditions[0];
+    const coldCond = acScript.sequence[0].choose[1].conditions[0].conditions[0];
+    const live = new Map<unknown, boolean | null>([[warmCond, warm], [coldCond, !warm]]);
+    expect(leaves.length).toBeGreaterThan(0);
+    return { a, c: ctx(hass, live) };
+  }
+
+  it("shows 'set cool 73°' when it is 50° outside", async () => {
+    const { upcomingGrouped } = await import("../src/predict");
+    const { a, c } = setup(true);
+    const [g] = upcomingGrouped([a], zonedToDate(2026, 11, 22, 21, 0, 0, TZ), c);
+    expect(g.nextPass?.effect).toBe("on");
+    expect(g.nextPass?.action?.label).toBe("set cool 73°");
+  });
+
+  it("shows 'set off' when it is below 39° outside", async () => {
+    const { upcomingGrouped } = await import("../src/predict");
+    const { a, c } = setup(false);
+    const [g] = upcomingGrouped([a], zonedToDate(2026, 11, 22, 21, 0, 0, TZ), c);
+    expect(g.nextPass?.effect).toBe("off");
+    expect(g.nextPass?.action?.label).toBe("set off");
+  });
+});

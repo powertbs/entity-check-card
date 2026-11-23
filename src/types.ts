@@ -31,7 +31,7 @@ export interface HomeAssistant {
     { id: string; area_id?: string | null; labels?: string[]; name?: string | null; name_by_user?: string | null }
   >;
   areas?: Record<string, { area_id: string; floor_id?: string | null; name: string }>;
-  config: { latitude: number; longitude: number; time_zone: string };
+  config: { latitude: number; longitude: number; time_zone: string; unit_system?: { temperature?: string } };
   user?: { id: string; is_admin: boolean; name: string };
   language?: string;
   locale?: { language?: string; time_format?: string };

@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -311,7 +311,10 @@ export class EntityCheckCard extends LitElement {
           <ha-state-icon .hass=${this.hass} .stateObj=${live}></ha-state-icon>
         </div>
         <div class="hero-text">
-          <span class="pill big ${onNow ? "on" : "off"}">${(live?.state ?? r.state).toUpperCase()}</span>
+          <div class="hero-row">
+            <span class="pill big ${onNow ? "on" : "off"}">${(live?.state ?? r.state).toUpperCase()}</span>
+            ${this._heroDetails(live)}
+          </div>
           <div class="muted small">since ${this._fmt(r.lastChanged)} · ${this._rel(r.lastChanged)}</div>
         </div>
       </div>
@@ -323,6 +326,30 @@ export class EntityCheckCard extends LitElement {
         ? html`<div class="box grey"><div class="muted">No automation changes this.</div></div>`
         : nothing}
     `;
+  }
+
+  /** Extra live details next to the state: target/room temperature, brightness, position. */
+  private _heroDetails(st?: { attributes: Record<string, any> }) {
+    if (!st) return nothing;
+    const a = st.attributes;
+    const unit = this.hass.config.unit_system?.temperature ?? "°";
+    const deg = (v: unknown) => `${v}${String(unit).startsWith("°") ? "°" : " " + unit}`;
+    const parts: TemplateResult[] = [];
+    const domain = this._entity.split(".")[0];
+    if (domain === "climate" || domain === "water_heater") {
+      if (a.temperature != null) parts.push(html`<span class="stat"><ha-icon icon="mdi:target"></ha-icon>${deg(a.temperature)}</span>`);
+      else if (a.target_temp_low != null || a.target_temp_high != null)
+        parts.push(html`<span class="stat"><ha-icon icon="mdi:target"></ha-icon>${deg(a.target_temp_low ?? "?")}–${deg(a.target_temp_high ?? "?")}</span>`);
+      if (a.current_temperature != null)
+        parts.push(html`<span class="stat"><ha-icon icon="mdi:home-thermometer"></ha-icon>${deg(a.current_temperature)}</span>`);
+    } else if (domain === "light" && a.brightness != null) {
+      parts.push(html`<span class="stat"><ha-icon icon="mdi:brightness-6"></ha-icon>${Math.round((a.brightness / 255) * 100)}%</span>`);
+    } else if ((domain === "cover" || domain === "valve") && a.current_position != null) {
+      parts.push(html`<span class="stat"><ha-icon icon="mdi:arrow-up-down"></ha-icon>${a.current_position}%</span>`);
+    } else if (domain === "fan" && a.percentage != null) {
+      parts.push(html`<span class="stat"><ha-icon icon="mdi:fan"></ha-icon>${a.percentage}%</span>`);
+    }
+    return parts.length ? parts : nothing;
   }
 
   private _box(color: string, icon: string, title: string, body: unknown, extra?: unknown) {
@@ -764,6 +791,22 @@ export class EntityCheckCard extends LitElement {
     .hero.on .hero-icon {
       background: var(--ec-on);
       color: #fff;
+    }
+    .hero-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .stat {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-weight: 600;
+    }
+    .stat ha-icon {
+      --mdc-icon-size: 18px;
+      color: var(--secondary-text-color);
     }
     .hero-text {
       display: flex;

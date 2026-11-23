@@ -285,6 +285,7 @@ export function evaluateOccurrence(o: Occurrence, ctx: PredictContext): PlanEven
   let adjust: EntityAction | undefined;
   let adjustSure = false;
   let firstBlock: CondEval | undefined;
+  let adjustAfter: EntityAction | undefined; // an adjustment that runs after the deciding action
   for (const act of o.automation.actions) {
     const g = act.guards.map((x) => evalCondition(x, o.time, o.trigger, ctx));
     const bad = g.find((x) => x.result === false);
@@ -296,16 +297,25 @@ export function evaluateOccurrence(o: Occurrence, ctx: PredictContext): PlanEven
     if (act.effect === "adjust") {
       adjust = act;
       adjustSure = sure;
+      if (decisive) adjustAfter = act;
     } else {
       decisive = act;
       decisiveSure = sure;
+      adjustAfter = undefined;
     }
   }
   const chosen = decisive ?? adjust;
   const chosenSure = decisive ? decisiveSure : adjustSure;
   if (!chosen) return { ...o, status: "fail", effect: null, conditions, blockedBy: firstBlock };
   if (!chosenSure) status = "unknown";
-  return { ...o, status, effect: chosen.effect, action: chosen, conditions };
+  // "set cool" followed by "set 73°" reads better as one: "set cool 73°".
+  let action = chosen;
+  if (decisive && adjustAfter && decisive.effect !== "off") {
+    const first = decisive.label ?? (decisive.effect === "on" ? "turn on" : decisive.effect);
+    const extra = (adjustAfter.label ?? "").replace(/^set /, "");
+    if (extra) action = { ...decisive, label: `${first} ${extra}` };
+  }
+  return { ...o, status, effect: chosen.effect, action, conditions };
 }
 
 export interface StateAt {
