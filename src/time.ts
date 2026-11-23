@@ -155,9 +155,12 @@ export function formatDuration(secs: number): string {
   return `${sign}${a}s`;
 }
 
-export function formatClock(secs: number): string {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}${s ? ":" + String(s).padStart(2, "0") : ""}`;
+export function formatClock(secs: number, hour12 = false): string {
+  const norm = ((Math.round(secs) % 86400) + 86400) % 86400;
+  const h = Math.floor(norm / 3600);
+  const m = Math.floor((norm % 3600) / 60);
+  const mm = String(m).padStart(2, "0");
+  if (hour12) return `${h % 12 || 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+  const sec = norm % 60;
+  return `${String(h).padStart(2, "0")}:${mm}${sec ? ":" + String(sec).padStart(2, "0") : ""}`;
 }

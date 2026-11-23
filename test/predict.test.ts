@@ -165,7 +165,7 @@ describe("grouped upcoming runs", () => {
     );
     const groups = upcomingGrouped([a], zonedToDate(2026, 11, 22, 19, 0, 0, TZ), ctx(hass));
     expect(groups).toHaveLength(1);
-    expect(groups[0].more).toBeGreaterThanOrEqual(6);
+    expect(groups[0].passes).toBeGreaterThanOrEqual(7);
   });
 });
 
@@ -254,5 +254,64 @@ describe("scripts and scenes", () => {
       ["on", ["scene.evening"]],
       ["off", []],
     ]);
+  });
+});
+
+describe("real-world: Weekdays All style automation", () => {
+  it("shows the 12:30 AM Good Night run (via script) as the next change, not the 10:30 PM one", async () => {
+    const { upcomingGrouped } = await import("../src/predict");
+    const hass = makeHass({ "input_boolean.vacation_mode": "off" });
+    const vacation = { condition: "state", entity_id: "input_boolean.vacation_mode", state: "off" };
+    const tctx: TargetContext = {
+      ...target,
+      scripts: new Map<string, any>([
+        ["script.good_night_script", { sequence: [{ action: "light.turn_off", target: { entity_id: "light.porch" } }] }],
+      ]),
+    };
+    const a = parseAutomation(
+      hass,
+      "automation.weekdays_all",
+      {
+        alias: "Weekdays All",
+        triggers: [
+          { at: "00:30:00", id: "12:30 AM", trigger: "time" },
+          { at: "22:30:00", id: "10:30 PM", trigger: "time" },
+        ],
+        conditions: [vacation],
+        actions: [
+          {
+            choose: [
+              {
+                conditions: [{ condition: "trigger", id: ["12:30 AM"] }],
+                sequence: [{ data: {}, action: "script.good_night_script" }],
+              },
+              {
+                conditions: [{ condition: "trigger", id: ["10:30 PM"] }],
+                sequence: [{ action: "light.turn_off", target: { entity_id: "light.outside_front_door" } }],
+              },
+            ],
+          },
+        ],
+      },
+      tctx,
+    );
+    const live = new Map<unknown, boolean | null>([[vacation, true]]);
+    const from = zonedToDate(2026, 11, 22, 20, 0, 0, TZ);
+    const [g] = upcomingGrouped([a], from, ctx(hass, live));
+    expect(g.first.status).toBe("fail"); // 10:30 PM doesn't touch this light
+    expect(g.nextPass?.trigger.id).toBe("12:30 AM");
+    expect(g.nextPass?.effect).toBe("off");
+    expect(g.nextPass?.action?.via).toEqual(["script.good_night_script"]);
+    expect(zonedParts(g.nextPass!.time, TZ)).toMatchObject({ day: 23, hour: 0, minute: 30 });
+  });
+
+  it("writes trigger times in 12-hour format when Home Assistant uses it", () => {
+    const hass = makeHass();
+    hass.locale = { time_format: "12" };
+    const a = parseAutomation(hass, "automation.x", { triggers: [{ trigger: "time", at: "22:30:00" }], actions: [] }, target);
+    expect(a.triggers[0].description).toBe("At 10:30 PM");
+    hass.locale = { time_format: "24" };
+    const b = parseAutomation(hass, "automation.x", { triggers: [{ trigger: "time", at: "00:30:00" }], actions: [] }, target);
+    expect(b.triggers[0].description).toBe("At 00:30");
   });
 });

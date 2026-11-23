@@ -279,6 +279,19 @@ export function parseAutomation(
 /* Descriptions                                                         */
 /* ------------------------------------------------------------------ */
 
+/** Follows the user's Home Assistant time format setting (12/24 hour, or the language default). */
+export function uses12h(hass: HomeAssistant): boolean {
+  const tf = hass.locale?.time_format;
+  if (tf === "12") return true;
+  if (tf === "24") return false;
+  const lang = tf === "system" ? undefined : (hass.locale?.language ?? hass.language);
+  try {
+    return Boolean(new Intl.DateTimeFormat(lang, { hour: "numeric" }).resolvedOptions().hour12);
+  } catch {
+    return false;
+  }
+}
+
 export const friendlyName = (hass: HomeAssistant, id: string) =>
   hass.states[id]?.attributes?.friendly_name ?? id;
 
@@ -295,7 +308,7 @@ const list = (v: unknown) =>
 function timeValue(hass: HomeAssistant, v: unknown): string {
   if (typeof v === "string") {
     const secs = parseTimeOfDay(v);
-    if (secs != null) return formatClock(secs);
+    if (secs != null) return formatClock(secs, uses12h(hass));
     if (v.includes(".")) {
       const s = hass.states[v];
       return s ? `${friendlyName(hass, v)} (${s.state})` : v;
@@ -423,7 +436,7 @@ export function describeCondition(raw: any, hass: HomeAssistant): string {
     case "zone":
       return `${names(hass, c.entity_id)} is in ${names(hass, c.zone)}`;
     case "trigger":
-      return `Started by trigger "${list(c.id)}"`;
+      return `Only for trigger "${list(c.id)}"`;
     case "and":
       return `All of: ${subs()}`;
     case "or":

@@ -34,6 +34,7 @@ export interface HomeAssistant {
   config: { latitude: number; longitude: number; time_zone: string };
   user?: { id: string; is_admin: boolean; name: string };
   language?: string;
+  locale?: { language?: string; time_format?: string };
   callWS<T>(msg: Record<string, unknown>): Promise<T>;
   callApi?<T>(method: "GET" | "POST", path: string): Promise<T>;
 }

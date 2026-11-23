@@ -2,13 +2,13 @@ import { LitElement, css, html, nothing, type PropertyValues, type TemplateResul
 import { customElement, property, state } from "lit/decorators.js";
 import type { EntityCheckCardConfig, HomeAssistant } from "./types";
 import { NotAdminError, analyze, checkAt, clearCache, isOnState, type Analysis } from "./analyze";
-import type { Effect } from "./automation";
+import { uses12h, type Effect } from "./automation";
 import type { CondEval, PlanEvent, StateAt, UpcomingGroup } from "./predict";
 import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -21,6 +21,7 @@ export class EntityCheckCard extends LitElement {
   @state() private _checkValue = "";
   @state() private _check?: { at: Date; state: StateAt; next?: PlanEvent };
   @state() private _picking = false;
+  @state() private _showBlocked = false;
   @state() private _filter: PickerFilter = { domain: "", area: "", device: "", search: "" };
 
   private _optionsCache?: { states: unknown; config: unknown; options: EntityOption[] };
@@ -148,6 +149,7 @@ export class EntityCheckCard extends LitElement {
       ...(withDate && !sameDay ? { weekday: "short", month: "short", day: "numeric" } : {}),
       hour: "numeric",
       minute: "2-digit",
+      hour12: uses12h(this.hass),
     }).format(d);
   }
 
@@ -420,7 +422,11 @@ export class EntityCheckCard extends LitElement {
   }
 
   private _renderNext(groups: UpcomingGroup[]) {
-    if (!groups.length) {
+    const active = groups
+      .filter((g) => g.nextPass)
+      .sort((a, b) => a.nextPass!.time.getTime() - b.nextPass!.time.getTime());
+    const blocked = groups.filter((g) => !g.nextPass);
+    if (!active.length && !blocked.length) {
       return this._box(
         "purple",
         "mdi:calendar-clock",
@@ -428,11 +434,12 @@ export class EntityCheckCard extends LitElement {
         html`<div class="muted small">Nothing scheduled in the next 8 days.</div>`,
       );
     }
-    const body = groups.map(({ first: e, nextPass, more }) => {
-      const blocked = e.status === "fail";
-      const kind = blocked ? "fail" : e.effect === "off" ? "off" : "on";
-      const problems = blocked ? [] : e.conditions.filter((c) => c.result !== true);
-      const okCount = blocked ? 0 : e.conditions.length - problems.length;
+
+    const rows = active.slice(0, 6).map(({ nextPass, passes }) => {
+      const e = nextPass!;
+      const kind = e.effect === "off" ? "off" : "on";
+      const problems = e.conditions.filter((c) => c.result !== true);
+      const okCount = e.conditions.length - problems.length;
       return html`
         <div class="event">
           <div class="time ${kind}">
@@ -441,29 +448,59 @@ export class EntityCheckCard extends LitElement {
           </div>
           <div class="grow">
             <div>
-              <span class="pill ${kind}">${blocked ? "blocked" : this._effectWord(e.effect)}</span>
+              <span class="pill ${kind}">${this._effectWord(e.effect)}</span>
+              ${e.status === "unknown" ? html`<span class="pill unknown">maybe</span>` : nothing}
               <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
             </div>
             <div class="muted small">
-              ${e.trigger.description}${more ? ` · repeats ${more}×` : ""}${this._viaText(e)}
+              ${e.trigger.description}${passes > 1 ? ` · ${passes}× in 8 days` : ""}
             </div>
-            <div class="chips">
-              ${blocked && e.blockedBy ? this._condChip(e.blockedBy.description, false, this._basisNote(e.blockedBy)) : nothing}
-              ${problems.map((c) => this._condChip(c.description, c.result, this._basisNote(c)))}
-              ${okCount ? this._chip(`${okCount} condition${okCount > 1 ? "s" : ""} OK`, "pass", "mdi:check") : nothing}
-              ${blocked && nextPass ? this._chip(`next: ${this._fmt(nextPass.time)}`, "neutral", "mdi:calendar-arrow-right") : nothing}
-            </div>
+            ${e.action?.via?.length
+              ? html`<div class="chips">${this._chip(html`via <b>${this._viaNames(e)}</b>`, "script", "mdi:script-text")}</div>`
+              : nothing}
+            ${problems.length || okCount
+              ? html`<div class="chips">
+                  ${problems.map((c) => this._condChip(c.description, c.result, this._basisNote(c)))}
+                  ${okCount ? this._chip(`${okCount} condition${okCount > 1 ? "s" : ""} OK`, "pass", "mdi:check") : nothing}
+                </div>`
+              : nothing}
           </div>
         </div>
       `;
     });
-    return this._box("purple", "mdi:calendar-clock", "Coming up", body);
+
+    const blockedPart = blocked.length
+      ? html`
+          <div class="blocked-toggle clickable" @click=${() => (this._showBlocked = !this._showBlocked)}>
+            <ha-icon icon=${this._showBlocked ? "mdi:chevron-down" : "mdi:chevron-right"}></ha-icon>
+            ${blocked.length} scheduled automation${blocked.length > 1 ? "s" : ""} won't change it in the next 8 days
+          </div>
+          ${this._showBlocked
+            ? blocked.map(
+                ({ first: e }) => html`
+                  <div class="blocked-row">
+                    <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
+                    <span class="muted small"> · ${e.trigger.description}</span>
+                    ${e.blockedBy
+                      ? html`<div class="chips">${this._condChip(e.blockedBy.description, false, this._basisNote(e.blockedBy))}</div>`
+                      : nothing}
+                  </div>
+                `,
+              )
+            : nothing}
+        `
+      : nothing;
+
+    return this._box(
+      "purple",
+      "mdi:calendar-clock",
+      "Coming up",
+      html`${rows.length ? rows : html`<div class="muted small">No scheduled change in the next 8 days.</div>`}${blockedPart}`,
+    );
   }
 
-  private _viaText(e: PlanEvent): string {
-    const via = e.action?.via;
-    if (!via?.length) return "";
-    return ` · via ${via.map((id) => this.hass.states[id]?.attributes?.friendly_name ?? id).join(" → ")}`;
+  private _viaNames(e: PlanEvent): string {
+    return (e.action?.via ?? []).map((id) => this.hass.states[id]?.attributes?.friendly_name ?? id).join(" → ");
   }
 
   private _basisNote(c: CondEval): string | undefined {
@@ -840,6 +877,24 @@ export class EntityCheckCard extends LitElement {
     .pill.fail {
       background: var(--ec-red);
       color: #fff;
+    }
+    .pill.unknown {
+      background: color-mix(in srgb, var(--ec-orange) 35%, var(--ec-bg));
+    }
+    .blocked-toggle {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.85em;
+      color: var(--secondary-text-color);
+      padding-top: 8px;
+      border-top: 1px solid color-mix(in srgb, var(--c) 20%, transparent);
+    }
+    .blocked-toggle ha-icon {
+      --mdc-icon-size: 18px;
+    }
+    .blocked-row {
+      padding: 4px 0 4px 22px;
     }
     .pill.big {
       font-size: 1em;

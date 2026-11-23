@@ -333,34 +333,32 @@ export function stateAt(autos: ParsedAutomation[], at: Date, ctx: PredictContext
 export interface UpcomingGroup {
   /** The automation's next scheduled run (may be blocked). */
   first: PlanEvent;
-  /** The first run that will actually act, if `first` is blocked. */
+  /** The first run that will actually act on the entity. */
   nextPass?: PlanEvent;
-  /** How many more scheduled runs follow in the look-ahead window. */
-  more: number;
+  /** Number of runs in the look-ahead window that will act on the entity. */
+  passes: number;
 }
 
-/** Next runs, one entry per automation, ordered by time. */
+/** Next runs, one entry per automation. */
 export function upcomingGrouped(
   autos: ParsedAutomation[],
   from: Date,
   ctx: PredictContext,
-  maxGroups = 5,
   lookaheadDays = 8,
 ): UpcomingGroup[] {
   const fut = occurrences(autos, new Date(from.getTime() + 1000), new Date(from.getTime() + lookaheadDays * 86400_000), ctx);
   const groups = new Map<string, UpcomingGroup>();
   for (const o of fut) {
+    const ev = evaluateOccurrence(o, ctx);
+    const pass = ev.status !== "fail";
     const g = groups.get(o.automation.entityId);
     if (!g) {
-      if (groups.size >= maxGroups) continue;
-      const ev = evaluateOccurrence(o, ctx);
-      groups.set(o.automation.entityId, { first: ev, nextPass: ev.status !== "fail" ? ev : undefined, more: 0 });
+      groups.set(o.automation.entityId, { first: ev, nextPass: pass ? ev : undefined, passes: pass ? 1 : 0 });
       continue;
     }
-    g.more++;
-    if (!g.nextPass) {
-      const ev = evaluateOccurrence(o, ctx);
-      if (ev.status !== "fail") g.nextPass = ev;
+    if (pass) {
+      g.passes++;
+      g.nextPass ??= ev;
     }
   }
   return [...groups.values()];
