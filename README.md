@@ -18,11 +18,15 @@ Pick an entity, read the answer, then pick another.
 
 ## Install
 
-### HACS (custom repository)
+### Marketplace (Home Assistant 2026.11 and newer)
 
-1. HACS → ⋮ → **Custom repositories**.
-2. Add this repository's URL, category **Dashboard**.
-3. Install **Entity Check**, then reload your browser.
+1. Settings → **Marketplace**.
+2. Search for **Entity Check**. If it isn't listed yet, add this repository by its link (`https://github.com/powertbs/entity-check-card`) as a **Dashboard** item.
+3. **Install**, then reload your browser.
+
+Updates show up under Settings → **Updates**, together with Home Assistant's own updates.
+
+On Home Assistant versions older than 2026.11, add the same link as a custom repository in HACS (category **Dashboard**).
 
 ### Manual
 
