@@ -423,6 +423,23 @@ function sunEvent(event: string, offset: unknown): string {
   return `${event}${off ? " " + formatDuration(off) : ""}`;
 }
 
+const humanize = (v: unknown) =>
+  String(v ?? "")
+    .replace(/^remote_/, "")
+    .replace(/_/g, " ")
+    .trim();
+
+/** "Master button: button 2 short press" instead of "Device trigger (remote_button_short_press)". */
+function describeDeviceTrigger(t: any, hass: HomeAssistant): string {
+  const dev = t.device_id ? hass.devices?.[t.device_id] : undefined;
+  const devName = dev ? dev.name_by_user || dev.name : "";
+  let what = humanize(t.type) || "device trigger";
+  const sub = humanize(t.subtype);
+  if (sub && !what.includes(sub)) what = `${sub} ${what}`.replace(/^(button \w+) button /, "$1 ");
+  what = what.charAt(0).toUpperCase() + what.slice(1);
+  return devName ? `${devName}: ${what}` : what;
+}
+
 export function describeTrigger(t0: any, hass: HomeAssistant): string {
   const t = normalizeTrigger(t0);
   const k = triggerKind(t);
@@ -468,7 +485,7 @@ export function describeTrigger(t0: any, hass: HomeAssistant): string {
     case "template":
       return "When a template becomes true";
     case "device":
-      return `Device trigger (${t.type ?? "?"})`;
+      return describeDeviceTrigger(t, hass);
     case "calendar":
       return `Calendar ${t.event ?? "event"} of ${names(hass, t.entity_id)}`;
     case "webhook":

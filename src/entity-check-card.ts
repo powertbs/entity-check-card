@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.7.1";
+const VERSION = "0.7.2";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -442,7 +442,7 @@ export class EntityCheckCard extends LitElement {
         <div class="grow">
           <div class="strong">${match ? "As expected" : "Not as scheduled"}</div>
           <div class="chips">
-            ${this._chip(html`Should be <b>${this._stateWord(s.expected)}</b>`, s.expected === "on" ? "on" : "off")}
+            ${this._chip(html`Should be <b>${this._expectedWord(s)}</b>`, s.expected === "on" ? "on" : "off")}
             ${match ? nothing : this._chip(html`Is <b>${this._stateWord(onNow ? "on" : "off")}</b>`, onNow ? "on" : "off")}
             ${s.uncertain ? this._chip("depends on conditions", "unknown", "mdi:help") : nothing}
           </div>
@@ -551,14 +551,38 @@ export class EntityCheckCard extends LitElement {
     return c.basis === "now" ? "Checked as it is right now" : undefined;
   }
 
+  /** One row per automation; repeated trigger texts are counted ("×4") instead of listed again. */
+  private _groupEventDriven(r: Analysis) {
+    const byAuto = new Map<string, { automation: Analysis["eventDriven"][number]["automation"]; counts: Map<string, number> }>();
+    for (const { automation, trigger } of r.eventDriven) {
+      let g = byAuto.get(automation.entityId);
+      if (!g) byAuto.set(automation.entityId, (g = { automation, counts: new Map() }));
+      g.counts.set(trigger.description, (g.counts.get(trigger.description) ?? 0) + 1);
+    }
+    return [...byAuto.values()].map(({ automation, counts }) => ({
+      automation,
+      text: [...counts].map(([d, n]) => (n > 1 ? `${d} ×${n}` : d)).join(" · "),
+    }));
+  }
+
+  /** "COOL 73°" for a thermostat set to cool 73°, otherwise ON/OFF. */
+  private _expectedWord(s: StateAt): string {
+    const label = s.decidedBy?.action?.label;
+    if (s.expected === "on" && label && s.decidedBy?.effect === "on") {
+      const rest = label.replace(/^(set|turn on|turn)\s*/i, "").trim();
+      if (rest) return (s.decidedBy.effect === "on" && /^\d/.test(rest) ? `on ${rest}` : rest).toUpperCase();
+    }
+    return this._stateWord(s.expected!);
+  }
+
   private _renderEventDriven(r: Analysis) {
     const body = html`
       <div class="chips">
-        ${r.eventDriven.map(
-          ({ automation, trigger }) => html`
-            <span class="chip neutral clickable" title=${trigger.description} @click=${() => this._openMoreInfo(automation.entityId)}>
+        ${this._groupEventDriven(r).map(
+          ({ automation, text }) => html`
+            <span class="chip neutral clickable" title=${text} @click=${() => this._openMoreInfo(automation.entityId)}>
               <ha-icon icon="mdi:flash"></ha-icon>${automation.name}
-              <span class="muted">· ${trigger.description}</span>
+              <span class="muted">· ${text}</span>
             </span>
           `,
         )}
