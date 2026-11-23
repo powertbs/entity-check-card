@@ -31,7 +31,7 @@ export interface TraceCondition {
 }
 
 export interface Cause {
-  kind: "automation" | "script" | "user" | "service" | "outside";
+  kind: "automation" | "script" | "user" | "service" | "outside" | "restart";
   title: string;
   detail?: string;
   time: Date;
@@ -326,6 +326,14 @@ async function findCause(
     };
   }
 
+  // Many entities changing in the same moment means Home Assistant restarted or an integration reloaded.
+  const lcMs = lc.getTime();
+  let sameMoment = 0;
+  for (const other of Object.values(hass.states)) {
+    if (Math.abs(Date.parse(other.last_changed) - lcMs) <= 3000) sameMoment++;
+  }
+  const looksLikeRestart = sameMoment >= 25;
+
   // Fall back to the logbook, which also covers scripts, users and service calls.
   let entry: any = null;
   try {
@@ -367,6 +375,15 @@ async function findCause(
       detail: entry?.context_service
         ? `Using ${entry.context_domain}.${entry.context_service} from a dashboard or the app`
         : "From a dashboard or the app",
+      time: lc,
+      exact: false,
+    };
+  }
+  if (looksLikeRestart && !entry?.context_service) {
+    return {
+      kind: "restart",
+      title: "Home Assistant restarted",
+      detail: `${sameMoment} entities changed at the same moment, so this was a restart or an integration reload. What set it before that isn't known.`,
       time: lc,
       exact: false,
     };

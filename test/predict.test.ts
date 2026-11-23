@@ -324,3 +324,54 @@ describe("readable entity times", () => {
     expect(a.triggers[0].description).toBe("At Candle lighting (Fri 4:17 PM)");
   });
 });
+
+describe("thermostat (climate) actions", () => {
+  const thermo: TargetContext = { entityId: "climate.thermostat", labels: [], deviceId: "thermo_dev" };
+
+  it("understands set_hvac_mode, set_temperature and device targets through a script", () => {
+    const hass = makeHass();
+    const tctx: TargetContext = {
+      ...thermo,
+      scripts: new Map<string, any>([
+        [
+          "script.ac_script",
+          {
+            sequence: [
+              { action: "climate.set_hvac_mode", target: { device_id: "thermo_dev" }, data: { hvac_mode: "cool" } },
+              { action: "climate.set_temperature", target: { entity_id: "climate.thermostat" }, data: { temperature: 71 } },
+            ],
+          },
+        ],
+      ]),
+    };
+    const a = parseAutomation(
+      hass,
+      "automation.ac",
+      {
+        triggers: [{ trigger: "time", at: "08:00" }, { trigger: "time", at: "23:00" }],
+        actions: [
+          { action: "script.ac_script" },
+          { action: "climate.set_hvac_mode", target: { entity_id: "climate.thermostat" }, data: { hvac_mode: "off" }, enabled: false },
+        ],
+      },
+      tctx,
+    );
+    expect(a.actions.map((x) => [x.effect, x.label])).toEqual([
+      ["on", "set cool"],
+      ["adjust", "set 71°"],
+    ]);
+  });
+
+  it("uses the on/off action for the expected state and ignores pure adjustments", () => {
+    const hass = makeHass();
+    const mk = (id: string, at: string, action: any) =>
+      parseAutomation(hass, id, { triggers: [{ trigger: "time", at }], actions: [action] }, thermo);
+    const autos = [
+      mk("automation.off", "22:00", { action: "climate.set_hvac_mode", target: { entity_id: "climate.thermostat" }, data: { hvac_mode: "off" } }),
+      mk("automation.temp", "23:00", { action: "climate.set_temperature", target: { entity_id: "climate.thermostat" }, data: { temperature: 68 } }),
+    ];
+    const s = stateAt(autos, zonedToDate(2026, 11, 22, 23, 30, 0, TZ), ctx(hass));
+    expect(s.expected).toBe("off");
+    expect(s.decidedBy?.automation.entityId).toBe("automation.off");
+  });
+});

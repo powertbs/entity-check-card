@@ -278,9 +278,12 @@ export function evaluateOccurrence(o: Occurrence, ctx: PredictContext): PlanEven
   if (failed) return { ...o, status: "fail", effect: null, conditions, blockedBy: failed };
   let status: PlanEvent["status"] = conditions.some((c) => c.result === null) ? "unknown" : "pass";
 
-  // The last action that would run decides the entity's final state for this run.
-  let chosen: EntityAction | undefined;
-  let chosenSure = false;
+  // The last on/off action that would run decides the entity's final state for this run;
+  // if the run only adjusts the entity (e.g. sets a temperature), that adjustment is shown instead.
+  let decisive: EntityAction | undefined;
+  let decisiveSure = false;
+  let adjust: EntityAction | undefined;
+  let adjustSure = false;
   let firstBlock: CondEval | undefined;
   for (const act of o.automation.actions) {
     const g = act.guards.map((x) => evalCondition(x, o.time, o.trigger, ctx));
@@ -289,9 +292,17 @@ export function evaluateOccurrence(o: Occurrence, ctx: PredictContext): PlanEven
       firstBlock ??= bad.children?.find((x) => x.result === false) ?? bad;
       continue;
     }
-    chosen = act;
-    chosenSure = !g.some((x) => x.result === null);
+    const sure = !g.some((x) => x.result === null);
+    if (act.effect === "adjust") {
+      adjust = act;
+      adjustSure = sure;
+    } else {
+      decisive = act;
+      decisiveSure = sure;
+    }
   }
+  const chosen = decisive ?? adjust;
+  const chosenSure = decisive ? decisiveSure : adjustSure;
   if (!chosen) return { ...o, status: "fail", effect: null, conditions, blockedBy: firstBlock };
   if (!chosenSure) status = "unknown";
   return { ...o, status, effect: chosen.effect, action: chosen, conditions };
@@ -317,6 +328,7 @@ export function stateAt(autos: ParsedAutomation[], at: Date, ctx: PredictContext
       if (!decidedBy && skipped.length < 5) skipped.push(ev);
       continue;
     }
+    if (ev.effect === "adjust") continue; // doesn't switch it on or off
     if (ev.status === "unknown") uncertain = true;
     decidedBy ??= ev;
     if (ev.effect === "toggle") {

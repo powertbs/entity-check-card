@@ -2,7 +2,8 @@
 import type { HomeAssistant } from "./types";
 import { formatClock, formatDuration, parseDuration, parseTimeOfDay } from "./time";
 
-export type Effect = "on" | "off" | "toggle";
+/** on/off/toggle change the on-off state; "adjust" acts on the entity without switching it (e.g. set temperature). */
+export type Effect = "on" | "off" | "toggle" | "adjust";
 export type TriggerKind = "time" | "sun" | "time_pattern" | "other";
 
 export interface EntityAction {
@@ -11,6 +12,8 @@ export interface EntityAction {
   /** Conditions that must hold for this action to run (from choose / if / inline condition steps). */
   guards: any[];
   branch?: string;
+  /** Short description of what it does, e.g. "set cool 71°" or "turn on 30%". */
+  label?: string;
   /** Script entity ids this action is reached through, outermost first. */
   via: string[];
 }
@@ -67,6 +70,77 @@ export function sceneStateEffect(v: unknown): Effect | null {
   const st = typeof v === "string" ? v : v && typeof v === "object" ? (v as any).state : undefined;
   if (typeof st !== "string" || !st) return null;
   return OFF_LIKE.includes(st) ? "off" : "on";
+}
+
+const isTemplate = (v: unknown) => typeof v === "string" && v.includes("{{");
+
+/**
+ * What a service call does to an entity of its own domain.
+ * Returns null for services that don't act on the entity's state at all.
+ */
+export function serviceAction(service: string, a: any, entityDomain: string): { effect: Effect; label?: string } | null {
+  const [domain, svc] = service.split(".");
+  const data = { ...(a?.data ?? {}), ...(a?.data_template ?? {}) };
+  const base = serviceEffect(service);
+  if (base) {
+    if (base === "on" && domain === "light" && data.brightness_pct != null && !isTemplate(data.brightness_pct)) {
+      return { effect: "on", label: `turn on ${data.brightness_pct}%` };
+    }
+    return { effect: base };
+  }
+  if (domain !== entityDomain && domain !== "homeassistant") return null;
+
+  const modeEffect = (mode: unknown, label: string) => {
+    if (typeof mode !== "string" || isTemplate(mode)) return { effect: "adjust" as Effect, label };
+    return { effect: (mode === "off" ? "off" : "on") as Effect, label: `${label} ${mode}`.trim() };
+  };
+  const temp = () => {
+    if (data.temperature != null) return `${data.temperature}°`;
+    if (data.target_temp_low != null || data.target_temp_high != null)
+      return `${data.target_temp_low ?? "?"}–${data.target_temp_high ?? "?"}°`;
+    return "";
+  };
+
+  switch (`${domain}.${svc}`) {
+    case "climate.set_hvac_mode":
+      return modeEffect(data.hvac_mode, "set");
+    case "climate.set_temperature": {
+      if (data.hvac_mode != null) {
+        const r = modeEffect(data.hvac_mode, "set");
+        return { ...r, label: `${r.label} ${temp()}`.trim() };
+      }
+      return { effect: "adjust", label: `set ${temp() || "temperature"}` };
+    }
+    case "climate.set_preset_mode":
+      return { effect: "adjust", label: `preset ${data.preset_mode ?? ""}`.trim() };
+    case "climate.set_fan_mode":
+      return { effect: "adjust", label: `fan ${data.fan_mode ?? ""}`.trim() };
+    case "water_heater.set_operation_mode":
+      return modeEffect(data.operation_mode, "set");
+    case "cover.set_cover_position":
+    case "valve.set_valve_position": {
+      const p = data.position;
+      if (p == null || isTemplate(p)) return { effect: "adjust", label: "set position" };
+      return { effect: Number(p) > 0 ? "on" : "off", label: `position ${p}%` };
+    }
+    case "fan.set_percentage": {
+      const p = data.percentage;
+      if (p == null || isTemplate(p)) return { effect: "adjust", label: "set speed" };
+      return { effect: Number(p) > 0 ? "on" : "off", label: `speed ${p}%` };
+    }
+    case "vacuum.start":
+      return { effect: "on", label: "start" };
+    case "vacuum.return_to_base":
+    case "vacuum.stop":
+      return { effect: "off", label: svc.replace(/_/g, " ") };
+    case "media_player.media_play":
+      return { effect: "on", label: "play" };
+    case "media_player.media_stop":
+      return { effect: "off", label: "stop" };
+    default:
+      // Any other action of the entity's own type still acts on it (set mode, set color, ...).
+      return { effect: "adjust", label: svc.replace(/_/g, " ") };
+  }
 }
 
 export function serviceEffect(service: string): Effect | null {
@@ -156,9 +230,9 @@ function walkActions(
         }
         continue;
       }
-      const effect = serviceEffect(service);
-      if (effect && targetsEntity(a, ctx, domain)) {
-        out.push({ effect, service, guards: [...local], branch, via });
+      const act = serviceAction(service, a, ctx.entityId.split(".")[0]);
+      if (act && targetsEntity(a, ctx, domain)) {
+        out.push({ effect: act.effect, label: act.label, service, guards: [...local], branch, via });
       }
       continue;
     }

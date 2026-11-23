@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -164,8 +164,13 @@ export class EntityCheckCard extends LitElement {
     return diff < 0 ? `${s} ago` : `in ${s}`;
   }
 
+  private _actionWord(e: PlanEvent): string {
+    return e.action?.label ?? this._effectWord(e.effect);
+  }
+
   private _effectWord(effect: Effect | null | "on" | "off"): string {
     const domain = this._entity.split(".")[0];
+    if (effect === "adjust") return "adjust";
     if (effect === "toggle") return "toggle";
     if (domain === "cover" || domain === "valve") return effect === "on" ? "open" : "close";
     if (domain === "lock") return effect === "on" ? "unlock" : "lock";
@@ -314,7 +319,7 @@ export class EntityCheckCard extends LitElement {
       ${r.skipped.length ? this._renderSkipped(r) : nothing} ${this._renderNext(r.next)}
       ${r.eventDriven.length || r.disabled.length ? this._renderEventDriven(r) : nothing} ${this._renderCheck()}
       ${!r.automations.length && !r.disabled.length
-        ? html`<div class="box grey"><div class="muted">No automation turns this on or off.</div></div>`
+        ? html`<div class="box grey"><div class="muted">No automation changes this.</div></div>`
         : nothing}
     `;
   }
@@ -346,6 +351,7 @@ export class EntityCheckCard extends LitElement {
       user: "mdi:account",
       service: "mdi:cog",
       outside: "mdi:gesture-tap",
+      restart: "mdi:restart",
     };
     const title = c.kind === "outside" ? "Manual, device or integration" : c.title;
     const body = html`
@@ -356,13 +362,13 @@ export class EntityCheckCard extends LitElement {
           ${c.kind === "outside"
             ? html`<div class="muted small">No automation did this: wall switch, app or an integration.</div>`
             : nothing}
-          ${(c.detail && c.kind !== "outside" && c.kind !== "user") || c.via
+          ${(c.detail && c.kind !== "outside" && c.kind !== "user" && c.kind !== "restart") || c.via
             ? html`<div class="chips">
-                ${c.detail && c.kind !== "outside" && c.kind !== "user" ? this._chip(c.detail, "neutral", "mdi:flash") : nothing}
+                ${c.detail && c.kind !== "outside" && c.kind !== "user" && c.kind !== "restart" ? this._chip(c.detail, "neutral", "mdi:flash") : nothing}
                 ${c.via ? this._chip(html`via <b>${c.via}</b>`, "script", "mdi:script-text") : nothing}
               </div>`
             : nothing}
-          ${c.kind === "user" && c.detail ? html`<div class="muted small">${c.detail}</div>` : nothing}
+          ${(c.kind === "user" || c.kind === "restart") && c.detail ? html`<div class="muted small">${c.detail}</div>` : nothing}
           ${c.conditions?.length
             ? html`<div class="chips">${c.conditions.map((x) => this._condChip(x.description, x.result))}</div>`
             : nothing}
@@ -413,7 +419,7 @@ export class EntityCheckCard extends LitElement {
             ${s.uncertain ? this._chip("depends on conditions", "unknown", "mdi:help") : nothing}
           </div>
           <div class="muted small">
-            Last: ${this._effectWord(e.effect)} · ${e.automation.name} · ${this._fmt(e.time)}
+            Last: ${this._actionWord(e)} · ${e.automation.name} · ${this._fmt(e.time)}
           </div>
         </div>
       </div>
@@ -437,7 +443,7 @@ export class EntityCheckCard extends LitElement {
 
     const rows = active.slice(0, 6).map(({ nextPass, sameTrigger }) => {
       const e = nextPass!;
-      const kind = e.effect === "off" ? "off" : "on";
+      const kind = e.effect === "off" ? "off" : e.effect === "adjust" ? "adjust" : "on";
       const problems = e.conditions.filter((c) => c.result !== true);
       const okCount = e.conditions.length - problems.length;
       return html`
@@ -448,7 +454,7 @@ export class EntityCheckCard extends LitElement {
           </div>
           <div class="grow">
             <div>
-              <span class="pill ${kind}">${this._effectWord(e.effect)}</span>
+              <span class="pill ${kind}">${this._actionWord(e)}</span>
               ${e.status === "unknown" ? html`<span class="pill unknown">maybe</span>` : nothing}
               <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
             </div>
@@ -552,13 +558,13 @@ export class EntityCheckCard extends LitElement {
                 ${c.state.decidedBy
                   ? html`<div class="muted small">
                       <ha-icon class="tiny" icon="mdi:arrow-left"></ha-icon>
-                      ${this._effectWord(c.state.decidedBy.effect)} · ${this._fmt(c.state.decidedBy.time)} · ${c.state.decidedBy.automation.name}
+                      ${this._actionWord(c.state.decidedBy)} · ${this._fmt(c.state.decidedBy.time)} · ${c.state.decidedBy.automation.name}
                     </div>`
                   : html`<div class="muted small">No schedule decides this time.</div>`}
                 ${c.next
                   ? html`<div class="muted small">
                       <ha-icon class="tiny" icon="mdi:arrow-right"></ha-icon>
-                      ${this._effectWord(c.next.effect)} · ${this._fmt(c.next.time)} · ${c.next.automation.name}
+                      ${this._actionWord(c.next)} · ${this._fmt(c.next.time)} · ${c.next.automation.name}
                     </div>`
                   : nothing}
               </div>
@@ -873,6 +879,9 @@ export class EntityCheckCard extends LitElement {
     }
     .pill.off {
       background: color-mix(in srgb, var(--ec-grey) 45%, var(--ec-bg));
+    }
+    .pill.adjust {
+      background: color-mix(in srgb, var(--ec-blue) 25%, var(--ec-bg));
     }
     .pill.fail {
       background: var(--ec-red);
