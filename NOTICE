@@ -1,0 +1,4 @@
+Entity Check
+
+Sunrise/sunset math in src/sun.ts is adapted from SunCalc,
+Copyright (c) 2014, Vladimir Agafonkin, BSD-2-Clause.
