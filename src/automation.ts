@@ -292,6 +292,27 @@ export function uses12h(hass: HomeAssistant): boolean {
   }
 }
 
+/** "07:00:00" -> "7:00 AM", "2026-11-27T21:17:00+00:00" -> "Fri 4:17 PM". */
+export function readableTime(hass: HomeAssistant, state: string): string {
+  const h12 = uses12h(hass);
+  const secs = parseTimeOfDay(state);
+  if (secs != null) return formatClock(secs, h12);
+  const isoLike = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(state);
+  const t = isoLike ? Date.parse(state.includes("T") || /[+-]\d{2}:?\d{2}$|Z$/.test(state) ? state : state.replace(" ", "T")) : NaN;
+  if (Number.isNaN(t)) return state;
+  try {
+    return new Intl.DateTimeFormat(hass.locale?.language ?? hass.language, {
+      timeZone: hass.config.time_zone,
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: h12,
+    }).format(new Date(t));
+  } catch {
+    return state;
+  }
+}
+
 export const friendlyName = (hass: HomeAssistant, id: string) =>
   hass.states[id]?.attributes?.friendly_name ?? id;
 
@@ -311,7 +332,7 @@ function timeValue(hass: HomeAssistant, v: unknown): string {
     if (secs != null) return formatClock(secs, uses12h(hass));
     if (v.includes(".")) {
       const s = hass.states[v];
-      return s ? `${friendlyName(hass, v)} (${s.state})` : v;
+      return s ? `${friendlyName(hass, v)} (${readableTime(hass, s.state)})` : v;
     }
     return v;
   }

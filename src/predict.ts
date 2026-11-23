@@ -337,6 +337,8 @@ export interface UpcomingGroup {
   nextPass?: PlanEvent;
   /** Number of runs in the look-ahead window that will act on the entity. */
   passes: number;
+  /** Runs from the same trigger as `nextPass` that will act on the entity. */
+  sameTrigger: number;
 }
 
 /** Next runs, one entry per automation. */
@@ -353,12 +355,18 @@ export function upcomingGrouped(
     const pass = ev.status !== "fail";
     const g = groups.get(o.automation.entityId);
     if (!g) {
-      groups.set(o.automation.entityId, { first: ev, nextPass: pass ? ev : undefined, passes: pass ? 1 : 0 });
+      groups.set(o.automation.entityId, {
+        first: ev,
+        nextPass: pass ? ev : undefined,
+        passes: pass ? 1 : 0,
+        sameTrigger: pass ? 1 : 0,
+      });
       continue;
     }
     if (pass) {
       g.passes++;
       g.nextPass ??= ev;
+      if (ev.trigger.index === g.nextPass.trigger.index) g.sameTrigger++;
     }
   }
   return [...groups.values()];

@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -435,7 +435,7 @@ export class EntityCheckCard extends LitElement {
       );
     }
 
-    const rows = active.slice(0, 6).map(({ nextPass, passes }) => {
+    const rows = active.slice(0, 6).map(({ nextPass, sameTrigger }) => {
       const e = nextPass!;
       const kind = e.effect === "off" ? "off" : "on";
       const problems = e.conditions.filter((c) => c.result !== true);
@@ -453,7 +453,7 @@ export class EntityCheckCard extends LitElement {
               <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
             </div>
             <div class="muted small">
-              ${e.trigger.description}${passes > 1 ? ` · ${passes}× in 8 days` : ""}
+              ${e.trigger.description}${sameTrigger > 1 ? ` · ${sameTrigger}× in 8 days` : ""}
             </div>
             ${e.action?.via?.length
               ? html`<div class="chips">${this._chip(html`via <b>${this._viaNames(e)}</b>`, "script", "mdi:script-text")}</div>`

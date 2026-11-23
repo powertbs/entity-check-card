@@ -10,6 +10,12 @@ You can also enter any date and time to see whether the entity should be on or o
 
 Pick an entity, read the answer, then pick another.
 
+<p>
+  <img src="docs/card.png" width="32%" alt="Entity Check showing a light that is on as expected, with upcoming changes via scripts">
+  <img src="docs/not-as-scheduled.png" width="32%" alt="Entity Check showing an entity that is not in its scheduled state">
+  <img src="docs/picker.png" width="32%" alt="Entity picker with type, area and device filters">
+</p>
+
 ## Install
 
 ### HACS (custom repository)

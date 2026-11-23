@@ -315,3 +315,12 @@ describe("real-world: Weekdays All style automation", () => {
     expect(b.triggers[0].description).toBe("At 00:30");
   });
 });
+
+describe("readable entity times", () => {
+  it("formats a timestamp sensor used as a time trigger", () => {
+    const hass = makeHass({ "sensor.candle_lighting": { state: "2026-11-27T21:17:00+00:00", attributes: { friendly_name: "Candle lighting" } } });
+    hass.locale = { time_format: "12", language: "en" };
+    const a = parseAutomation(hass, "automation.x", { triggers: [{ trigger: "time", at: "sensor.candle_lighting" }], actions: [] }, target);
+    expect(a.triggers[0].description).toBe("At Candle lighting (Fri 4:17 PM)");
+  });
+});
