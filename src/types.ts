@@ -35,6 +35,7 @@ export interface HomeAssistant {
   user?: { id: string; is_admin: boolean; name: string };
   language?: string;
   callWS<T>(msg: Record<string, unknown>): Promise<T>;
+  callApi?<T>(method: "GET" | "POST", path: string): Promise<T>;
 }
 
 export interface EntityCheckCardConfig {

@@ -11,6 +11,8 @@ export interface EntityAction {
   /** Conditions that must hold for this action to run (from choose / if / inline condition steps). */
   guards: any[];
   branch?: string;
+  /** Script entity ids this action is reached through, outermost first. */
+  via: string[];
 }
 
 export interface ParsedTrigger {
@@ -40,6 +42,10 @@ export interface TargetContext {
   areaId?: string | null;
   floorId?: string | null;
   labels: string[];
+  /** Script configs by entity id, so actions inside called scripts can be followed. */
+  scripts?: Map<string, any>;
+  /** What each scene that includes this entity does to it, by scene entity id. */
+  scenes?: Map<string, Effect>;
 }
 
 export const asArray = <T = any>(x: T | T[] | null | undefined): T[] =>
@@ -53,6 +59,15 @@ const splitIds = (v: unknown): string[] =>
 const ON_SERVICES = ["turn_on", "open_cover", "open_valve", "unlock", "open"];
 const OFF_SERVICES = ["turn_off", "close_cover", "close_valve", "lock", "close"];
 const TOGGLE_SERVICES = ["toggle", "toggle_cover"];
+
+const OFF_LIKE = ["off", "closed", "locked", "idle", "standby", "paused"];
+
+/** A scene's stored state for an entity ("on", {state: "off", brightness: 50}, ...) as an effect. */
+export function sceneStateEffect(v: unknown): Effect | null {
+  const st = typeof v === "string" ? v : v && typeof v === "object" ? (v as any).state : undefined;
+  if (typeof st !== "string" || !st) return null;
+  return OFF_LIKE.includes(st) ? "off" : "on";
+}
 
 export function serviceEffect(service: string): Effect | null {
   const svc = service.split(".")[1] ?? "";
@@ -90,8 +105,18 @@ const DEVICE_TYPES: Record<string, Effect> = {
   unlock: "on",
 };
 
-function walkActions(list: unknown, guards: any[], out: EntityAction[], ctx: TargetContext, branch?: string) {
+const MAX_SCRIPT_DEPTH = 6;
+
+function walkActions(
+  list: unknown,
+  guards: any[],
+  out: EntityAction[],
+  ctx: TargetContext,
+  branch?: string,
+  via: string[] = [],
+) {
   const local = [...guards];
+  const walk = (l: unknown, g: any[], br?: string, v: string[] = via) => walkActions(l, g, out, ctx, br, v);
   for (const a of asArray<any>(list as any)) {
     if (!a || typeof a !== "object" || a.enabled === false) continue;
 
@@ -99,9 +124,41 @@ function walkActions(list: unknown, guards: any[], out: EntityAction[], ctx: Tar
       typeof a.action === "string" ? a.action : typeof a.service === "string" ? a.service : undefined;
 
     if (service) {
+      const [domain, svc] = service.split(".");
+      if (domain === "scene") {
+        if (svc === "turn_on") {
+          // Activating stored scenes that include this entity.
+          const t = { ...(a.data ?? {}), ...(a.target ?? {}) };
+          for (const sid of [...splitIds(t.entity_id), ...splitIds(a.entity_id)]) {
+            const effect = ctx.scenes?.get(sid);
+            if (effect) out.push({ effect, service, guards: [...local], branch, via: [...via, sid] });
+          }
+        } else if (svc === "apply") {
+          // Scenes written inline in the action.
+          const effect = sceneStateEffect((a.data ?? {}).entities?.[ctx.entityId]);
+          if (effect) out.push({ effect, service, guards: [...local], branch, via });
+        }
+        continue;
+      }
+      if (domain === "script") {
+        // Follow into the called script(s): `script.my_script` or `script.turn_on` with script targets.
+        let called: string[] = [];
+        if (svc === "turn_on" || svc === "toggle") {
+          const t = { ...(a.data ?? {}), ...(a.target ?? {}) };
+          called = [...splitIds(t.entity_id), ...splitIds(a.entity_id)];
+        } else if (svc !== "turn_off" && svc !== "reload") {
+          called = [service];
+        }
+        for (const sid of called) {
+          if (via.includes(sid) || via.length >= MAX_SCRIPT_DEPTH) continue;
+          const cfg = ctx.scripts?.get(sid);
+          if (cfg) walk(cfg.sequence, local, branch, [...via, sid]);
+        }
+        continue;
+      }
       const effect = serviceEffect(service);
-      if (effect && targetsEntity(a, ctx, service.split(".")[0])) {
-        out.push({ effect, service, guards: [...local], branch });
+      if (effect && targetsEntity(a, ctx, domain)) {
+        out.push({ effect, service, guards: [...local], branch, via });
       }
       continue;
     }
@@ -113,7 +170,7 @@ function walkActions(list: unknown, guards: any[], out: EntityAction[], ctx: Tar
         a.device_id === ctx.deviceId &&
         (a.entity_id === ctx.entityId || (ctx.registryId && a.entity_id === ctx.registryId))
       ) {
-        out.push({ effect, service: `${a.domain} device: ${a.type}`, guards: [...local], branch });
+        out.push({ effect, service: `${a.domain} device: ${a.type}`, guards: [...local], branch, via });
       }
       continue;
     }
@@ -125,35 +182,35 @@ function walkActions(list: unknown, guards: any[], out: EntityAction[], ctx: Tar
         const conds = asArray(opt.conditions ?? opt.condition);
         const g = [...local, and(conds)];
         if (prev.length) g.push(not(prev.map((p) => and(p))));
-        walkActions(opt.sequence, g, out, ctx, `choose option ${i + 1}`);
+        walk(opt.sequence, g, `choose option ${i + 1}`);
         prev.push(conds);
       });
       if (a.default) {
         const g = prev.length ? [...local, not(prev.map((p) => and(p)))] : [...local];
-        walkActions(a.default, g, out, ctx, "choose default");
+        walk(a.default, g, "choose default");
       }
       continue;
     }
 
     if (a.if !== undefined) {
       const conds = asArray(a.if);
-      walkActions(a.then, [...local, and(conds)], out, ctx, "if → then");
-      if (a.else) walkActions(a.else, [...local, not([and(conds)])], out, ctx, "if → else");
+      walk(a.then, [...local, and(conds)], "if → then");
+      if (a.else) walk(a.else, [...local, not([and(conds)])], "if → else");
       continue;
     }
 
     if (a.parallel !== undefined) {
-      for (const p of asArray<any>(a.parallel)) walkActions(p?.sequence ?? [p], local, out, ctx, branch);
+      for (const p of asArray<any>(a.parallel)) walk(p?.sequence ?? [p], local, branch);
       continue;
     }
 
     if (a.repeat?.sequence) {
-      walkActions(a.repeat.sequence, local, out, ctx, branch ?? "repeat");
+      walk(a.repeat.sequence, local, branch ?? "repeat");
       continue;
     }
 
     if (a.sequence !== undefined) {
-      walkActions(a.sequence, local, out, ctx, branch);
+      walk(a.sequence, local, branch);
       continue;
     }
 

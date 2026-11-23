@@ -1,6 +1,8 @@
 /** Gathers everything the card shows for one entity: past cause, skipped runs, current expectation and next changes. */
 import type { HomeAssistant } from "./types";
 import {
+  sceneStateEffect,
+  type Effect,
   asArray,
   collectLiveLeaves,
   describeCondition,
@@ -34,6 +36,8 @@ export interface Cause {
   detail?: string;
   time: Date;
   automationEntity?: string;
+  /** Script that did the actual change, when the automation ran it through a script. */
+  via?: string;
   conditions?: TraceCondition[];
   /** true when matched through the run's context id, false when inferred from the logbook. */
   exact: boolean;
@@ -71,30 +75,50 @@ export const isOnState = (s: string) => !OFF_STATES.includes(s);
 /* Loading                                                              */
 /* ------------------------------------------------------------------ */
 
-let configCache: { at: number; configs: { entityId: string; config: any }[] } | null = null;
+type Configs = { entityId: string; config: any }[];
+const configCache = new Map<string, { at: number; configs: Configs }>();
 const CACHE_MS = 60_000;
 
 export function clearCache() {
-  configCache = null;
+  configCache.clear();
 }
 
-async function loadAutomationConfigs(hass: HomeAssistant) {
-  if (configCache && Date.now() - configCache.at < CACHE_MS) return configCache.configs;
-  const ids = Object.keys(hass.states).filter((id) => id.startsWith("automation."));
-  const configs: { entityId: string; config: any }[] = [];
+/** Blueprint-based automations/scripts only store their inputs; ask HA for the filled-in config. */
+async function resolveBlueprint(hass: HomeAssistant, domain: string, config: any): Promise<any> {
+  const bp = config?.use_blueprint;
+  if (!bp?.path) return config;
+  try {
+    const r = await hass.callWS<{ substituted_config: any }>({
+      type: "blueprint/substitute",
+      domain,
+      path: bp.path,
+      input: bp.input ?? {},
+    });
+    return { ...r.substituted_config, alias: config.alias ?? r.substituted_config?.alias };
+  } catch {
+    return config;
+  }
+}
+
+/** Load all automation or script configs (cached for a minute). */
+async function loadConfigs(hass: HomeAssistant, domain: "automation" | "script"): Promise<Configs> {
+  const cached = configCache.get(domain);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.configs;
+  const ids = Object.keys(hass.states).filter((id) => id.startsWith(`${domain}.`));
+  const configs: Configs = [];
   for (let i = 0; i < ids.length; i += 25) {
     const chunk = ids.slice(i, i + 25);
     const res = await Promise.all(
       chunk.map((entity_id) =>
         hass
-          .callWS<{ config: any }>({ type: "automation/config", entity_id })
-          .then((r) => ({ entityId: entity_id, config: r.config }))
+          .callWS<{ config: any }>({ type: `${domain}/config`, entity_id })
+          .then(async (r) => ({ entityId: entity_id, config: await resolveBlueprint(hass, domain, r.config) }))
           .catch(() => null),
       ),
     );
     for (const r of res) if (r?.config) configs.push(r);
   }
-  configCache = { at: Date.now(), configs };
+  configCache.set(domain, { at: Date.now(), configs });
   return configs;
 }
 
@@ -136,6 +160,31 @@ async function testConditions(hass: HomeAssistant, leaves: any[]): Promise<Map<u
   return live;
 }
 
+/** Scenes that include the entity, and what each one sets it to. */
+async function loadScenes(hass: HomeAssistant, entityId: string): Promise<Map<string, Effect>> {
+  const out = new Map<string, Effect>();
+  const scenes = Object.values(hass.states).filter(
+    (s) => s.entity_id.startsWith("scene.") && (s.attributes.entity_id ?? []).includes(entityId),
+  );
+  await Promise.all(
+    scenes.map(async (sc) => {
+      let effect: Effect | null = null;
+      // Scenes made in the UI can be read back to see the exact state they set.
+      if (sc.attributes.id && hass.callApi) {
+        try {
+          const cfg = await hass.callApi<any>("GET", `config/scene/config/${sc.attributes.id}`);
+          effect = sceneStateEffect(cfg?.entities?.[entityId]);
+        } catch {
+          /* YAML-only scene or no access */
+        }
+      }
+      // If the stored state can't be read, a scene that includes the entity almost always turns it on.
+      out.set(sc.entity_id, effect ?? "on");
+    }),
+  );
+  return out;
+}
+
 let userCache: Map<string, string> | null = null;
 async function userName(hass: HomeAssistant, id: string): Promise<string> {
   if (hass.user?.id === id) return hass.user.name;
@@ -156,6 +205,7 @@ async function userName(hass: HomeAssistant, id: string): Promise<string> {
 /* ------------------------------------------------------------------ */
 
 interface TraceSummary {
+  domain: "automation" | "script";
   item_id: string;
   run_id: string;
   state: string;
@@ -163,11 +213,14 @@ interface TraceSummary {
   trigger?: string;
   error?: string;
   timestamp: { start: string; finish?: string | null };
-  context?: { id: string };
+  context?: { id: string; parent_id?: string | null };
 }
 
 const getTrace = (hass: HomeAssistant, s: TraceSummary) =>
-  hass.callWS<any>({ type: "trace/get", domain: "automation", item_id: s.item_id, run_id: s.run_id });
+  hass.callWS<any>({ type: "trace/get", domain: s.domain, item_id: s.item_id, run_id: s.run_id });
+
+const scriptName = (hass: HomeAssistant, itemId: string) =>
+  hass.states[`script.${itemId}`]?.attributes?.friendly_name ?? itemId;
 
 function traceConditions(full: any, hass: HomeAssistant): TraceCondition[] {
   const conds = asArray(full?.config?.conditions ?? full?.config?.condition);
@@ -198,9 +251,13 @@ async function findCause(
   const lc = new Date(st.last_changed);
   const ids = [st.context?.id, st.context?.parent_id].filter(Boolean);
 
-  let match = summaries.find((s) => s.context?.id && ids.includes(s.context.id));
+  const ctxOf = (x: { context?: { id: string } } | null | undefined) => x?.context?.id;
+  const direct = summaries.filter((s) => ctxOf(s) && ids.includes(ctxOf(s)!));
+  let match = direct.find((s) => s.domain === "automation");
+  let scriptRun = direct.find((s) => s.domain === "script");
   let full: any = null;
-  if (!match) {
+
+  if (!match && !scriptRun) {
     const lcMs = lc.getTime();
     const candidates = summaries
       .filter((s) => {
@@ -209,26 +266,36 @@ async function findCause(
         return start <= lcMs + 2000 && finish >= lcMs - 2000;
       })
       .sort((a, b) => {
-        // Prefer automations known to act on this entity, then the closest start time.
-        const ra = relevantIds.has(a.item_id) ? 0 : 1;
-        const rb = relevantIds.has(b.item_id) ? 0 : 1;
+        // Prefer runs known to act on this entity, then the closest start time.
+        const ra = relevantIds.has(`${a.domain}:${a.item_id}`) ? 0 : 1;
+        const rb = relevantIds.has(`${b.domain}:${b.item_id}`) ? 0 : 1;
         if (ra !== rb) return ra - rb;
         return Math.abs(Date.parse(a.timestamp.start) - lcMs) - Math.abs(Date.parse(b.timestamp.start) - lcMs);
       })
-      .slice(0, 8);
+      .slice(0, 10);
     for (const c of candidates) {
       try {
         const t = await getTrace(hass, c);
         if (t?.context?.id && ids.includes(t.context.id)) {
-          match = c;
-          full = t;
-          break;
+          if (c.domain === "automation") {
+            match = c;
+            full = t;
+            break;
+          }
+          scriptRun ??= { ...c, context: t.context };
         }
       } catch {
         /* ignore */
       }
     }
   }
+
+  // A script run started by an automation: find that automation through the shared or parent context.
+  if (!match && scriptRun) {
+    const parent = [ctxOf(scriptRun), scriptRun.context?.parent_id].filter(Boolean);
+    match = summaries.find((s) => s.domain === "automation" && ctxOf(s) && parent.includes(ctxOf(s)!));
+  }
+  const via = scriptRun ? scriptName(hass, scriptRun.item_id) : undefined;
 
   if (match) {
     try {
@@ -243,7 +310,18 @@ async function findCause(
       detail: match.trigger ?? full?.trigger,
       time: new Date(match.timestamp.start),
       automationEntity: auto?.entityId,
+      via,
       conditions: full ? traceConditions(full, hass) : undefined,
+      exact: true,
+    };
+  }
+  if (scriptRun) {
+    return {
+      kind: "script",
+      title: `Script: ${via}`,
+      detail: "Run directly, not by an automation",
+      time: new Date(scriptRun.timestamp.start),
+      automationEntity: `script.${scriptRun.item_id}`,
       exact: true,
     };
   }
@@ -322,7 +400,8 @@ async function findSkipped(
   const runs = summaries
     .filter(
       (s) =>
-        relevantIds.has(s.item_id) &&
+        s.domain === "automation" &&
+        relevantIds.has(`automation:${s.item_id}`) &&
         s.script_execution &&
         SKIP_REASONS[s.script_execution] &&
         Date.parse(s.timestamp.start) > since.getTime(),
@@ -361,8 +440,18 @@ export async function analyze(hass: HomeAssistant, entityId: string): Promise<An
   const st = hass.states[entityId];
   if (!st) throw new Error(`Entity ${entityId} not found`);
 
-  const [tctx, configs] = await Promise.all([loadTargetContext(hass, entityId), loadAutomationConfigs(hass)]);
+  const [tctx, configs, scriptConfigs] = await Promise.all([
+    loadTargetContext(hass, entityId),
+    loadConfigs(hass, "automation"),
+    loadConfigs(hass, "script"),
+  ]);
+  tctx.scripts = new Map(scriptConfigs.map((c) => [c.entityId, c.config]));
+  tctx.scenes = await loadScenes(hass, entityId);
   const all = configs.map((c) => parseAutomation(hass, c.entityId, c.config, tctx));
+  // Scripts that act on the entity themselves (used to recognise script runs in the history).
+  const relevantScripts = scriptConfigs.filter(
+    (c) => parseAutomation(hass, c.entityId, { actions: c.config.sequence }, tctx).actions.length,
+  );
   const relevant = all.filter((a) => a.actions.length);
   const enabled = relevant.filter((a) => a.enabled);
   const disabled = relevant.filter((a) => !a.enabled);
@@ -379,12 +468,22 @@ export async function analyze(hass: HomeAssistant, entityId: string): Promise<An
 
   const byConfigId = new Map<string, ParsedAutomation>();
   for (const a of all) if (a.configId) byConfigId.set(a.configId, a);
-  const relevantIds = new Set(relevant.map((a) => a.configId).filter(Boolean) as string[]);
+  const relevantIds = new Set([
+    ...relevant.filter((a) => a.configId).map((a) => `automation:${a.configId}`),
+    ...relevantScripts.map((c) => `script:${c.entityId.slice("script.".length)}`),
+  ]);
 
   let summaries: TraceSummary[] = [];
   let tracesAvailable = true;
   try {
-    summaries = await hass.callWS<TraceSummary[]>({ type: "trace/list", domain: "automation" });
+    const [autoRuns, scriptRuns] = await Promise.all([
+      hass.callWS<TraceSummary[]>({ type: "trace/list", domain: "automation" }),
+      hass.callWS<TraceSummary[]>({ type: "trace/list", domain: "script" }).catch(() => [] as TraceSummary[]),
+    ]);
+    summaries = [
+      ...autoRuns.map((s) => ({ ...s, domain: "automation" as const })),
+      ...scriptRuns.map((s) => ({ ...s, domain: "script" as const })),
+    ];
   } catch {
     tracesAvailable = false;
   }

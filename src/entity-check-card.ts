@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -354,8 +354,11 @@ export class EntityCheckCard extends LitElement {
           ${c.kind === "outside"
             ? html`<div class="muted small">No automation did this: wall switch, app or an integration.</div>`
             : nothing}
-          ${c.detail && c.kind !== "outside" && c.kind !== "user"
-            ? html`<div class="chips">${this._chip(c.detail, "neutral", "mdi:flash")}</div>`
+          ${(c.detail && c.kind !== "outside" && c.kind !== "user") || c.via
+            ? html`<div class="chips">
+                ${c.detail && c.kind !== "outside" && c.kind !== "user" ? this._chip(c.detail, "neutral", "mdi:flash") : nothing}
+                ${c.via ? this._chip(html`via <b>${c.via}</b>`, "script", "mdi:script-text") : nothing}
+              </div>`
             : nothing}
           ${c.kind === "user" && c.detail ? html`<div class="muted small">${c.detail}</div>` : nothing}
           ${c.conditions?.length
@@ -441,7 +444,9 @@ export class EntityCheckCard extends LitElement {
               <span class="pill ${kind}">${blocked ? "blocked" : this._effectWord(e.effect)}</span>
               <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
             </div>
-            <div class="muted small">${e.trigger.description}${more ? ` · repeats ${more}×` : ""}</div>
+            <div class="muted small">
+              ${e.trigger.description}${more ? ` · repeats ${more}×` : ""}${this._viaText(e)}
+            </div>
             <div class="chips">
               ${blocked && e.blockedBy ? this._condChip(e.blockedBy.description, false, this._basisNote(e.blockedBy)) : nothing}
               ${problems.map((c) => this._condChip(c.description, c.result, this._basisNote(c)))}
@@ -453,6 +458,12 @@ export class EntityCheckCard extends LitElement {
       `;
     });
     return this._box("purple", "mdi:calendar-clock", "Coming up", body);
+  }
+
+  private _viaText(e: PlanEvent): string {
+    const via = e.action?.via;
+    if (!via?.length) return "";
+    return ` · via ${via.map((id) => this.hass.states[id]?.attributes?.friendly_name ?? id).join(" → ")}`;
   }
 
   private _basisNote(c: CondEval): string | undefined {
@@ -800,6 +811,9 @@ export class EntityCheckCard extends LitElement {
     }
     .chip.on {
       --k: var(--ec-on);
+    }
+    .chip.script {
+      --k: var(--ec-purple);
     }
     .chip.disabled {
       opacity: 0.6;

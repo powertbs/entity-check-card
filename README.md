@@ -48,6 +48,8 @@ In the card itself, start typing to search by name, area or device, or narrow th
 
 - Needs an **administrator** account, because it reads automation configs and run history (traces).
 - It finds automations that act on the entity by entity, device, area, floor or label, including actions inside `choose` and `if` blocks.
+- It follows **scripts** the automation runs (also scripts that run other scripts) and **scenes** (`scene.turn_on` and `scene.apply`), and shows "via <script or scene>".
+- Automations and scripts made from **blueprints** are read with their inputs filled in.
 - **Time**, **sun** and **time pattern** triggers can be predicted. Event based triggers (motion, someone arriving, a button press) can't. They are listed under "Can also change it".
 - Conditions are checked like this:
   - time, sun and trigger-id conditions are calculated for the moment in question;

@@ -211,3 +211,48 @@ describe("new-style sun trigger", () => {
     expect(zonedParts(occ[0].time, TZ).hour).toBe(5);
   });
 });
+
+describe("scripts and scenes", () => {
+  it("follows automation → script → script down to the light, with the via chain", () => {
+    const hass = makeHass();
+    const ctxWithScripts: TargetContext = {
+      ...target,
+      scripts: new Map<string, any>([
+        ["script.night", { sequence: [{ action: "script.turn_on", target: { entity_id: "script.porch_off" } }] }],
+        ["script.porch_off", { sequence: [{ condition: "state", entity_id: "input_boolean.x", state: "on" }, { action: "light.turn_off", target: { entity_id: "light.porch" } }] }],
+        ["script.loop", { sequence: [{ action: "script.loop" }] }],
+      ]),
+    };
+    const a = parseAutomation(
+      hass,
+      "automation.night",
+      { triggers: [{ trigger: "time", at: "23:00" }], actions: [{ action: "script.night" }, { action: "script.loop" }] },
+      ctxWithScripts,
+    );
+    expect(a.actions).toHaveLength(1);
+    expect(a.actions[0].effect).toBe("off");
+    expect(a.actions[0].via).toEqual(["script.night", "script.porch_off"]);
+    expect(a.actions[0].guards).toHaveLength(1); // the script's own condition step still applies
+  });
+
+  it("understands scene.turn_on and inline scene.apply", () => {
+    const hass = makeHass();
+    const ctxWithScenes: TargetContext = { ...target, scenes: new Map([["scene.evening", "on" as const]]) };
+    const a = parseAutomation(
+      hass,
+      "automation.scenes",
+      {
+        triggers: [{ trigger: "sun", event: "sunset" }],
+        actions: [
+          { action: "scene.turn_on", target: { entity_id: "scene.evening" } },
+          { action: "scene.apply", data: { entities: { "light.porch": { state: "off" } } } },
+        ],
+      },
+      ctxWithScenes,
+    );
+    expect(a.actions.map((x) => [x.effect, x.via])).toEqual([
+      ["on", ["scene.evening"]],
+      ["off", []],
+    ]);
+  });
+});
