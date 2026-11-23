@@ -1,6 +1,6 @@
 {
   "name": "entity-check-card",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Home Assistant dashboard card that explains why an entity is on or off, and predicts when automations will change it next.",
   "type": "module",
   "main": "dist/entity-check-card.js",

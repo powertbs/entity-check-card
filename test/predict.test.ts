@@ -166,6 +166,7 @@ describe("grouped upcoming runs", () => {
     const groups = upcomingGrouped([a], zonedToDate(2026, 11, 22, 19, 0, 0, TZ), ctx(hass));
     expect(groups).toHaveLength(1);
     expect(groups[0].passes).toBeGreaterThanOrEqual(7);
+    expect(groups[0].otherBranch).toBe(false);
   });
 });
 
@@ -297,8 +298,13 @@ describe("real-world: Weekdays All style automation", () => {
     );
     const live = new Map<unknown, boolean | null>([[vacation, true]]);
     const from = zonedToDate(2026, 11, 22, 20, 0, 0, TZ);
-    const [g] = upcomingGrouped([a], from, ctx(hass, live));
-    expect(g.first.status).toBe("fail"); // 10:30 PM doesn't touch this light
+    const groups = upcomingGrouped([a], from, ctx(hass, live));
+    // One row per trigger: the 10:30 PM trigger only runs another branch, the 12:30 AM one turns the light off.
+    expect(groups).toHaveLength(2);
+    const other = groups.find((x) => x.first.trigger.id === "10:30 PM")!;
+    expect(other.nextPass).toBeUndefined();
+    expect(other.otherBranch).toBe(true);
+    const g = groups.find((x) => x.first.trigger.id === "12:30 AM")!;
     expect(g.nextPass?.trigger.id).toBe("12:30 AM");
     expect(g.nextPass?.effect).toBe("off");
     expect(g.nextPass?.action?.via).toEqual(["script.good_night_script"]);
@@ -373,5 +379,49 @@ describe("thermostat (climate) actions", () => {
     const s = stateAt(autos, zonedToDate(2026, 11, 22, 23, 30, 0, TZ), ctx(hass));
     expect(s.expected).toBe("off");
     expect(s.decidedBy?.automation.entityId).toBe("automation.off");
+  });
+});
+
+describe("real-world: AC script from several Weekdays All triggers", () => {
+  it("lists every trigger time that runs the AC script, not just the first", async () => {
+    const { upcomingGrouped } = await import("../src/predict");
+    const hass = makeHass();
+    const tctx: TargetContext = {
+      entityId: "climate.thermostat",
+      labels: [],
+      scripts: new Map<string, any>([
+        ["script.ac_script", { sequence: [{ action: "climate.set_hvac_mode", target: { entity_id: "climate.thermostat" }, data: { hvac_mode: "cool" } }] }],
+      ]),
+    };
+    const branch = (id: string, seq: any[]) => ({ conditions: [{ condition: "trigger", id: [id] }], sequence: seq });
+    const a = parseAutomation(
+      hass,
+      "automation.weekdays_all",
+      {
+        triggers: [
+          { at: "00:30:00", id: "12:30 AM", trigger: "time" },
+          { at: "08:00:00", id: "8:00 AM", trigger: "time" },
+          { at: "10:30:00", id: "10:30 AM", trigger: "time" },
+          { event: "sunset", id: "Sunset", trigger: "sun" },
+          { at: "09:00:00", id: "9:00 AM", trigger: "time" },
+        ],
+        actions: [
+          {
+            choose: [
+              branch("12:30 AM", [{ action: "script.ac_script" }]),
+              branch("8:00 AM", [{ action: "script.ac_script" }]),
+              branch("10:30 AM", [{ action: "script.ac_script" }]),
+              branch("Sunset", [{ action: "script.turn_on", target: { entity_id: "script.ac_script" } }]),
+              branch("9:00 AM", [{ action: "cover.set_cover_position", target: { entity_id: "cover.x" }, data: { position: 4 } }]),
+            ],
+          },
+        ],
+      },
+      tctx,
+    );
+    const groups = upcomingGrouped([a], zonedToDate(2026, 11, 22, 21, 0, 0, TZ), ctx(hass));
+    const acting = groups.filter((g) => g.nextPass).map((g) => g.first.trigger.id).sort();
+    expect(acting).toEqual(["10:30 AM", "12:30 AM", "8:00 AM", "Sunset"]);
+    expect(groups.find((g) => g.first.trigger.id === "9:00 AM")?.otherBranch).toBe(true);
   });
 });

@@ -343,17 +343,17 @@ export function stateAt(autos: ParsedAutomation[], at: Date, ctx: PredictContext
 }
 
 export interface UpcomingGroup {
-  /** The automation's next scheduled run (may be blocked). */
+  /** The next scheduled run of this trigger (may be blocked). */
   first: PlanEvent;
-  /** The first run that will actually act on the entity. */
+  /** The first run of this trigger that will actually act on the entity. */
   nextPass?: PlanEvent;
-  /** Number of runs in the look-ahead window that will act on the entity. */
+  /** Number of runs of this trigger in the look-ahead window that will act on the entity. */
   passes: number;
-  /** Runs from the same trigger as `nextPass` that will act on the entity. */
-  sameTrigger: number;
+  /** True when this trigger never reaches an action on the entity (another trigger's branch). */
+  otherBranch: boolean;
 }
 
-/** Next runs, one entry per automation. */
+/** Next runs, one entry per automation trigger (an automation with several trigger times gets several rows). */
 export function upcomingGrouped(
   autos: ParsedAutomation[],
   from: Date,
@@ -365,20 +365,21 @@ export function upcomingGrouped(
   for (const o of fut) {
     const ev = evaluateOccurrence(o, ctx);
     const pass = ev.status !== "fail";
-    const g = groups.get(o.automation.entityId);
+    const key = `${o.automation.entityId}#${o.trigger.index}`;
+    const g = groups.get(key);
     if (!g) {
-      groups.set(o.automation.entityId, {
+      groups.set(key, {
         first: ev,
         nextPass: pass ? ev : undefined,
         passes: pass ? 1 : 0,
-        sameTrigger: pass ? 1 : 0,
+        otherBranch: !pass && ev.blockedBy?.basis === "trigger",
       });
       continue;
     }
     if (pass) {
       g.passes++;
       g.nextPass ??= ev;
-      if (ev.trigger.index === g.nextPass.trigger.index) g.sameTrigger++;
+      g.otherBranch = false;
     }
   }
   return [...groups.values()];

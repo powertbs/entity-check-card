@@ -8,7 +8,7 @@ import { zonedParts, zonedToDate } from "./time";
 import { domainLabel, entityInfo, entityOptions, filterOptions, type EntityOption, type PickerFilter } from "./picker";
 import "./editor";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 @customElement("entity-check-card")
 export class EntityCheckCard extends LitElement {
@@ -22,6 +22,7 @@ export class EntityCheckCard extends LitElement {
   @state() private _check?: { at: Date; state: StateAt; next?: PlanEvent };
   @state() private _picking = false;
   @state() private _showBlocked = false;
+  @state() private _showAllNext = false;
   @state() private _filter: PickerFilter = { domain: "", area: "", device: "", search: "" };
 
   private _optionsCache?: { states: unknown; config: unknown; options: EntityOption[] };
@@ -431,7 +432,8 @@ export class EntityCheckCard extends LitElement {
     const active = groups
       .filter((g) => g.nextPass)
       .sort((a, b) => a.nextPass!.time.getTime() - b.nextPass!.time.getTime());
-    const blocked = groups.filter((g) => !g.nextPass);
+    // Triggers that only run other branches of the automation are not interesting here.
+    const blocked = groups.filter((g) => !g.nextPass && !g.otherBranch);
     if (!active.length && !blocked.length) {
       return this._box(
         "purple",
@@ -441,7 +443,8 @@ export class EntityCheckCard extends LitElement {
       );
     }
 
-    const rows = active.slice(0, 6).map(({ nextPass, sameTrigger }) => {
+    const limit = this._showAllNext ? active.length : 6;
+    const rows = active.slice(0, limit).map(({ nextPass, passes }) => {
       const e = nextPass!;
       const kind = e.effect === "off" ? "off" : e.effect === "adjust" ? "adjust" : "on";
       const problems = e.conditions.filter((c) => c.result !== true);
@@ -459,7 +462,7 @@ export class EntityCheckCard extends LitElement {
               <span class="strong clickable" @click=${() => this._openMoreInfo(e.automation.entityId)}>${e.automation.name}</span>
             </div>
             <div class="muted small">
-              ${e.trigger.description}${sameTrigger > 1 ? ` · ${sameTrigger}× in 8 days` : ""}
+              ${e.trigger.description}${passes > 1 ? ` · ${passes}× in 8 days` : ""}
             </div>
             ${e.action?.via?.length
               ? html`<div class="chips">${this._chip(html`via <b>${this._viaNames(e)}</b>`, "script", "mdi:script-text")}</div>`
@@ -474,6 +477,14 @@ export class EntityCheckCard extends LitElement {
         </div>
       `;
     });
+
+    const morePart =
+      active.length > 6
+        ? html`<div class="blocked-toggle clickable" @click=${() => (this._showAllNext = !this._showAllNext)}>
+            <ha-icon icon=${this._showAllNext ? "mdi:chevron-up" : "mdi:chevron-down"}></ha-icon>
+            ${this._showAllNext ? "Show less" : `Show ${active.length - 6} more`}
+          </div>`
+        : nothing;
 
     const blockedPart = blocked.length
       ? html`
@@ -501,7 +512,7 @@ export class EntityCheckCard extends LitElement {
       "purple",
       "mdi:calendar-clock",
       "Coming up",
-      html`${rows.length ? rows : html`<div class="muted small">No scheduled change in the next 8 days.</div>`}${blockedPart}`,
+      html`${rows.length ? rows : html`<div class="muted small">No scheduled change in the next 8 days.</div>`}${morePart}${blockedPart}`,
     );
   }
 
